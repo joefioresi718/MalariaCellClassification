@@ -1,0 +1,7 @@
+save_models/
+Test/
+wandb/
+.idea/
+.DS_Store
+data/
+__pycache__/
