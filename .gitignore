@@ -5,3 +5,5 @@ wandb/
 .DS_Store
 data/
 __pycache__/
+copypaste.py
+undersample.py

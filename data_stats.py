@@ -12,17 +12,17 @@ import numpy as np
 #     print(pd.value_counts(df[columns]))
 #     print(pd.value_counts(df_val[columns]))
 
-df = pd.read_csv('files/celltype.csv')
-print(pd.value_counts(df['label'].to_numpy()))
+df = pd.read_csv('files/undersample_train.csv')
+print(pd.value_counts(df['cell_type'].to_numpy()))
 
 length = len(df)
 print(length)
 
 weights = []
-for count in pd.value_counts(df['label'].to_numpy()):
+for count in pd.value_counts(df['cell_type'].to_numpy()):
     weights.append((length - count) / length)
 
-print(class_weight.compute_class_weight(class_weight='balanced', classes=np.unique(df['label'].to_numpy()), y=df['label'].to_numpy()))
+print(class_weight.compute_class_weight(class_weight='balanced', classes=np.unique(df['cell_type'].to_numpy()), y=df['cell_type'].to_numpy()))
 
 print(weights)
 

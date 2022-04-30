@@ -12,10 +12,10 @@ class CellClassificationDataset(Dataset):
         self.transform = transform
         if set == 'train':
             self.root_dir = 'data/cells/'
-            self.image_frame = pd.read_csv('files/train.csv')
+            self.image_frame = pd.read_csv('files/undersample_train.csv')
         elif set == 'val':
             self.root_dir = 'data/cells/'
-            self.image_frame = pd.read_csv('files/val.csv')
+            self.image_frame = pd.read_csv('files/undersample_val.csv')
         else:
             self.root_dir = 'data/cells/'
             train_list = pd.read_csv('files/train.csv')

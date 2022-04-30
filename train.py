@@ -7,6 +7,9 @@ import torch
 import torch.utils.data
 from torch import nn
 import torchvision
+import pandas as pd
+import seaborn as sn
+from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
 
 import dataloader
 import transforms as T
@@ -54,7 +57,7 @@ def train_one_epoch(model, criterion, optimizer, data_loader, device, epoch, pri
     return metric_logger.loss.value, metric_logger.acc.value
 
 
-def evaluate(model, criterion, data_loader, visualize, output_dir, epoch, device, print_freq=100):
+def evaluate(model, criterion, data_loader, visualize, epoch, device, name, print_freq=100):
     model.eval()
     metric_logger = utils.MetricLogger(delimiter="  ")
     header = 'Test:'
@@ -102,7 +105,7 @@ def evaluate(model, criterion, data_loader, visualize, output_dir, epoch, device
                         ax.tick_params(axis='both', labelsize=0, length=0)
                         ax.set(xlabel=("Predicted Label: " + str(pred.t()[0][i].item()) + ' Actual: ' + str(
                             target.cpu()[i].item())))
-                        fig.savefig(output_dir + 'visualize/' + str(idx) + '.png')
+                        fig.savefig(os.path.join('save_models', name, 'visualize', str(idx) + '.png'))
                         plt.close('all')
                         idx += 1
                 # free memory
@@ -136,9 +139,17 @@ def evaluate(model, criterion, data_loader, visualize, output_dir, epoch, device
     target_names = ['red_blood_cell', 'gametocyte', 'ring', 'schizont', 'trophozoite']
     results = classification_report(target_class, pred_class, target_names=target_names)
     report = classification_report(target_class, pred_class, target_names=target_names, output_dict=True)
+    cm = confusion_matrix(target_class, pred_class, normalize='pred')
+    df_cm = pd.DataFrame(cm, index=[i for i in target_names],
+                         columns=[i for i in target_names])
+    plt.figure(figsize=(10, 7))
+    sn.heatmap(df_cm, annot=True, fmt='.2f', cmap="OrRd")
+    # disp = ConfusionMatrixDisplay(cm, display_labels=target_names).plot()
     print(results)
-    os.makedirs(os.path.join('save_models', 'reports'), exist_ok=True)
-    with open(os.path.join('save_models', 'reports', f'epoch{epoch}.txt'), 'w') as file:
+    os.makedirs(os.path.join('save_models', name), exist_ok=True)
+    plt.savefig(os.path.join('save_models', name, f'epoch{epoch}_confmat.png'))
+    plt.close('all')
+    with open(os.path.join('save_models', name, f'epoch{epoch}.txt'), 'w') as file:
         file.write(results)
 
     # free classification report var
@@ -239,10 +250,13 @@ def get_transform(train, base_size, crop_size):
         transforms.append(T.RandomHorizontalFlip(0.5))
         transforms.append(T.RandomVerticalFlip(0.5))
         transforms.append(T.RandomRotate90(0.5))
+        transforms.append(torchvision.transforms.ColorJitter())
         transforms.append(T.GaussianBlur((7, 7), 2))
     else:
         transforms.append(T.CenterCrop(crop_size))
     transforms.append(T.ToTensor())
+    # if train:
+    #     transforms.append(torchvision.transforms.RandomErasing())
     transforms.append(T.Normalize(mean=.5, std=.2))
 
     return T.Compose(transforms)
@@ -253,11 +267,10 @@ def main(args):
         raise RuntimeError("Failed to import apex. Please install apex from https://www.github.com/nvidia/apex "
                            "to enable mixed-precision training.")
 
-    if args.output_dir:
-        utils.mkdir(args.output_dir)
-        utils.mkdir('save_models/' + args.output_dir)
+    if args.name:
+        utils.mkdir(os.path.join('save_models', args.name))
         if args.visualize:
-            utils.mkdir(args.output_dir + 'visualize/')
+            utils.mkdir(os.path.join('save_models', args.name, 'visualize'))
 
     utils.init_distributed_mode(args)
     print(args)
@@ -301,19 +314,20 @@ def main(args):
     if args.distributed and args.sync_bn:
         model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
 
-    # criterion = nn.CrossEntropyLoss()
-    # criterion = focalloss.FocalLoss(weight=torch.tensor([2.02791630e-01, 2.94467433e+01, 4.68634146e+01, 2.84651852e+02,
-    #                                                      9.98129870e+01])
-    #                                 .to(device))
-    criterion = torch.hub.load('adeelh/pytorch-multi-class-focal-loss',
-                               model='focal_loss',
-                               alpha=torch.tensor([2.02791630e-01, 2.94467433e+01, 4.68634146e+01, 2.84651852e+02,
-                                                   9.98129870e+01]),
-                               gamma=2,
-                               reduction='mean',
-                               device='cuda',
-                               dtype=torch.float32,
-                               force_reload=False)
+    # weight = torch.tensor([2.02791630e-01, 2.94467433e+01, 4.68634146e+01, 2.84651852e+02, 9.98129870e+01]).to(device)
+    weight = torch.tensor([0.59363636, 0.61314554, 0.98195489, 5.93636364, 2.00923077]).to(device)
+
+    criterion = nn.CrossEntropyLoss(weight=weight)
+    # criterion = focalloss.FocalLoss(weight=weight)
+    # criterion = torch.hub.load('adeelh/pytorch-multi-class-focal-loss',
+    #                            model='focal_loss',
+    #                            alpha=torch.tensor([2.02791630e-01, 2.94467433e+01, 4.68634146e+01, 2.84651852e+02,
+    #                                                9.98129870e+01]),
+    #                            gamma=2,
+    #                            reduction='mean',
+    #                            device='cuda',
+    #                            dtype=torch.float32,
+    #                            force_reload=False)
 
     opt_name = args.opt.lower()
     if opt_name == 'sgd':
@@ -346,25 +360,28 @@ def main(args):
         optimizer.load_state_dict(checkpoint['optimizer'])
         lr_scheduler.load_state_dict(checkpoint['lr_scheduler'])
         args.start_epoch = checkpoint['epoch'] + 1
+        epoch = args.start_epoch
 
     if args.test_only:
-        evaluate(model, criterion, data_loader_testonly, args.visualize, args.output_dir, 9999, device=device)
+        evaluate(model, criterion, data_loader_testonly, False, 9999, device=device, name=args.name)
         return
 
     if args.wandb:
         # weights and bias tracking setup
         wandb.config = {
+            "experiment_name": args.name,
             "learning_rate": args.lr,
             "epochs": args.epochs,
             "batch_size": args.batch_size,
             "optimizer": args.opt,
-            "lr_scheduler": "cosine annealing",
+            # "lr_scheduler": f'step lr- step size: {args.lr_step_size}, gamma: {args.lr_gamma}',
+            "lr_scheduler": 'cosine_annealing',
             "pretrained": args.pretrained,
             "loss function": "focal loss"
         }
 
         # for weights and bias tracking
-        wandb.init(config=wandb.config, project="cap5516finalproject", entity="joefioresi718")
+        wandb.init(config=wandb.config, project="cap5516finalproject", entity="joefioresi718", name=args.name)
 
     # start training
     start_time = time.time()
@@ -374,7 +391,7 @@ def main(args):
             train_sampler.set_epoch(epoch)
         loss_train, acc_train = train_one_epoch(model, criterion, optimizer, data_loader, device, epoch, args.print_freq, args.apex)
         lr_scheduler.step()
-        loss_val, f1_val = evaluate(model, criterion, data_loader_test, False, args.output_dir, epoch, device=device)
+        loss_val, f1_val = evaluate(model, criterion, data_loader_test, False, epoch, device=device, name=args.name)
 
         if args.wandb:
             # log loss and accuracies
@@ -387,7 +404,7 @@ def main(args):
             # Optional
             # wandb.watch(model)
 
-        if args.output_dir:
+        if args.name:
             checkpoint = {
                 'model': model_without_ddp.state_dict(),
                 'optimizer': optimizer.state_dict(),
@@ -399,15 +416,15 @@ def main(args):
             #     os.path.join('save_models/' + args.output_dir, 'model_{}.pth'.format(epoch)))
             utils.save_on_master(
                 checkpoint,
-                os.path.join('save_models', args.output_dir, 'checkpoint.pth'))
+                os.path.join('save_models', args.name, 'checkpoint.pth'))
             if loss_val < best_loss:
                 best_loss = loss_val
-                utils.save_on_master(checkpoint, os.path.join('save_models', args.output_dir, 'best_model.pth'))
+                utils.save_on_master(checkpoint, os.path.join('save_models', args.name, 'best_model.pth'))
 
     if args.visualize:
-        checkpoint = torch.load(os.path.join('save_models', args.output_dir, 'best_model.pth'), map_location='cpu')
+        checkpoint = torch.load(os.path.join('save_models', args.name, 'best_model.pth'), map_location='cpu')
         model.load_state_dict(checkpoint['model'], strict=not args.test_only)
-        test_loss, test_f1 = evaluate(model, criterion , data_loader_testonly, False, args.output_dir, epoch, device=device)
+        test_loss, test_f1 = evaluate(model, criterion, data_loader_testonly, False, epoch+1, device=device, name=args.name)
         if args.wandb:
             # log loss and accuracies
             wandb.log({
@@ -425,6 +442,7 @@ def get_args_parser(add_help=True):
     parser = argparse.ArgumentParser(description='PyTorch Classification Training', add_help=add_help)
 
     parser.add_argument('--wandb', default=True, help='weights and bias')
+    parser.add_argument('--name', default='reports', help='filesystem name')
     parser.add_argument('--data-path', default='data/', help='dataset')
     parser.add_argument('--anno-dir', default='files/')
     parser.add_argument('--model', default='resnet50', help='model')
@@ -435,7 +453,7 @@ def get_args_parser(add_help=True):
     parser.add_argument('-j', '--workers', default=8, type=int, metavar='N',
                         help='number of data loading workers (default: 16)')
     parser.add_argument('--opt', default='adam', type=str, help='optimizer')
-    parser.add_argument('--lr', default=0.0002, type=float, help='initial learning rate')
+    parser.add_argument('--lr', default=0.0001, type=float, help='initial learning rate')
     parser.add_argument('--momentum', default=0.9, type=float, metavar='M',
                         help='momentum')
     parser.add_argument('--wd', '--weight-decay', default=1e-4, type=float,
@@ -464,6 +482,7 @@ def get_args_parser(add_help=True):
     parser.add_argument(
         "--test-only",
         dest="test_only",
+        default=False,
         help="Only test the model",
         action="store_true",
     )
